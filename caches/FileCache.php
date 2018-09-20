@@ -8,7 +8,9 @@ class FileCache implements CacheInterface {
 	protected $param;
 
 	public function loadData(){
-		return unserialize(file_get_contents($this->getCacheFile()));
+		if(file_exists($this->getCacheFile())) {
+			return unserialize(file_get_contents($this->getCacheFile()));
+		}
 	}
 
 	public function saveData($datas){
@@ -17,7 +19,7 @@ class FileCache implements CacheInterface {
 		$writeStream = file_put_contents($this->getCacheFile(), serialize($datas));
 
 		if($writeStream === false) {
-			throw new \Exception("Cannot write the cache... Do you have the right permissions ?");
+			throw new \Exception('Cannot write the cache... Do you have the right permissions ?');
 		}
 
 		return $this;
@@ -25,7 +27,8 @@ class FileCache implements CacheInterface {
 
 	public function getTime(){
 		$cacheFile = $this->getCacheFile();
-		if(file_exists($cacheFile)){
+		clearstatcache(false, $cacheFile);
+		if(file_exists($cacheFile)) {
 			return filemtime($cacheFile);
 		}
 
@@ -34,16 +37,16 @@ class FileCache implements CacheInterface {
 
 	public function purgeCache($duration){
 		$cachePath = $this->getPath();
-		if(file_exists($cachePath)){
+		if(file_exists($cachePath)) {
 			$cacheIterator = new RecursiveIteratorIterator(
 			new RecursiveDirectoryIterator($cachePath),
 			RecursiveIteratorIterator::CHILD_FIRST
 			);
 
-			foreach($cacheIterator as $cacheFile){
+			foreach($cacheIterator as $cacheFile) {
 				if(in_array($cacheFile->getBasename(), array('.', '..', '.gitkeep')))
 					continue;
-				elseif($cacheFile->isFile()){
+				elseif($cacheFile->isFile()) {
 					if(filemtime($cacheFile->getPathname()) < time() - $duration)
 						unlink($cacheFile->getPathname());
 				}
@@ -56,7 +59,7 @@ class FileCache implements CacheInterface {
 	* @return self
 	*/
 	public function setPath($path){
-		if(is_null($path) || !is_string($path)){
+		if(is_null($path) || !is_string($path)) {
 			throw new \Exception('The given path is invalid!');
 		}
 
@@ -88,7 +91,7 @@ class FileCache implements CacheInterface {
 	* @return string Cache path
 	*/
 	protected function getPath(){
-		if(is_null($this->path)){
+		if(is_null($this->path)) {
 			throw new \Exception('Call "setPath" first!');
 		}
 
@@ -108,7 +111,7 @@ class FileCache implements CacheInterface {
 	* return string
 	*/
 	protected function getCacheName(){
-		if(is_null($this->param)){
+		if(is_null($this->param)) {
 			throw new \Exception('Call "setParameters" first!');
 		}
 

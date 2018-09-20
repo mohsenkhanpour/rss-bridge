@@ -1,41 +1,264 @@
 <?php
 class FacebookBridge extends BridgeAbstract {
 
-	const MAINTAINER = 'teromene';
+	const MAINTAINER = 'teromene, logmanoriginal';
 	const NAME = 'Facebook';
 	const URI = 'https://www.facebook.com/';
 	const CACHE_TIMEOUT = 300; // 5min
 	const DESCRIPTION = 'Input a page title or a profile log. For a profile log,
  please insert the parameter as follow : myExamplePage/132621766841117';
 
-	const PARAMETERS = array( array(
-		'u' => array(
-			'name' => 'Username',
-			'required' => true
+	const PARAMETERS = array(
+		'User' => array(
+			'u' => array(
+				'name' => 'Username',
+				'required' => true
+			),
+			'media_type' => array(
+				'name' => 'Media type',
+				'type' => 'list',
+				'required' => false,
+				'values' => array(
+					'All' => 'all',
+					'Video' => 'video',
+					'No Video' => 'novideo'
+				),
+				'defaultValue' => 'all'
+			),
+			'skip_reviews' => array(
+				'name' => 'Skip reviews',
+				'type' => 'checkbox',
+				'required' => false,
+				'defaultValue' => false,
+				'title' => 'Feed includes reviews when checked'
+			)
+		),
+		'Group' => array(
+			'g' => array(
+				'name' => 'Group',
+				'type' => 'text',
+				'required' => true,
+				'exampleValue' => 'https://www.facebook.com/groups/743149642484225',
+				'title' => 'Insert group name or facebook group URL'
+			)
 		)
-	));
+	);
 
 	private $authorName = '';
+	private $groupName = '';
 
-	public function collectData(){
+	public function getURI() {
+		$uri = self::URI;
 
-		//Extract a string using start and end delimiters
-		function extractFromDelimiters($string, $start, $end){
-			if(strpos($string, $start) !== false){
-				$section_retrieved = substr($string, strpos($string, $start) + strlen($start));
-				$section_retrieved = substr($section_retrieved, 0, strpos($section_retrieved, $end));
-				return $section_retrieved;
+		switch($this->queriedContext) {
+
+			case 'Group':
+				$uri .= 'groups/' . $this->sanitizeGroup(filter_var($this->getInput('g'), FILTER_SANITIZE_URL));
+				break;
+
+		}
+
+		return $uri .= '?_fb_noscript=1';
+	}
+
+	public function collectData() {
+
+		switch($this->queriedContext) {
+
+			case 'Group':
+				$this->collectGroupData();
+				break;
+
+			case 'User':
+				$this->collectUserData();
+				break;
+
+			default:
+				returnClientError('Unknown context: "' . $this->queriedContext . '"!');
+
+		}
+
+	}
+
+	#region Group
+
+	private function collectGroupData() {
+
+		$header = array('Accept-Language: ' . getEnv('HTTP_ACCEPT_LANGUAGE') . "\r\n");
+
+		$html = getSimpleHTMLDOM($this->getURI(), $header)
+			or returnServerError('Failed loading facebook page: ' . $this->getURI());
+
+		if(!$this->isPublicGroup($html)) {
+			returnClientError('This group is not public! RSS-Bridge only supports public groups!');
+		}
+
+		defaultLinkTo($html, substr(self::URI, 0, strlen(self::URI) - 1));
+
+		$this->groupName = $this->extractGroupName($html);
+
+		$posts = $html->find('div.userContentWrapper')
+			or returnServerError('Failed finding posts!');
+
+		foreach($posts as $post) {
+
+			$item = array();
+
+			$item['uri'] = $this->extractGroupURI($post);
+			$item['title'] = $this->extractGroupTitle($post);
+			$item['author'] = $this->extractGroupAuthor($post);
+			$item['content'] = $this->extractGroupContent($post);
+			$item['timestamp'] = $this->extractGroupTimestamp($post);
+			$item['enclosures'] = $this->extractGroupEnclosures($post);
+
+			$this->items[] = $item;
+
+		}
+
+	}
+
+	private function sanitizeGroup($group) {
+
+		if(filter_var(
+			$group,
+			FILTER_VALIDATE_URL,
+			FILTER_FLAG_HOST_REQUIRED | FILTER_FLAG_PATH_REQUIRED)) {
+			// User provided a URL
+
+			$urlparts = parse_url($group);
+
+			if($urlparts['host'] !== parse_url(self::URI)['host']
+			&& 'www.' . $urlparts['host'] !== parse_url(self::URI)['host']) {
+
+				returnClientError('The host you provided is invalid! Received "'
+				. $urlparts['host']
+				. '", expected "'
+				. parse_url(self::URI)['host']
+				. '"!');
+
 			}
 
-			return false;
+			return explode('/', $urlparts['path'])[2];
+
+		} elseif(strpos($group, '/') !== false) {
+			returnClientError('The group you provided is invalid: ' . $group);
+		} else {
+			return $group;
 		}
+
+	}
+
+	private function isPublicGroup($html) {
+
+		// Facebook redirects to the groups about page for non-public groups
+		$about = $html->find('#pagelet_group_about', 0);
+
+		return !($about);
+
+	}
+
+	private function extractGroupName($html) {
+
+		$ogtitle = $html->find('meta[property="og:title"]', 0)
+			or returnServerError('Unable to find group title!');
+
+		return htmlspecialchars_decode($ogtitle->content, ENT_QUOTES);
+
+	}
+
+	private function extractGroupURI($post) {
+
+		$elements = $post->find('a')
+			or returnServerError('Unable to find URI!');
+
+		foreach($elements as $anchor) {
+
+			// Find the one that is a permalink
+			if(strpos($anchor->href, 'permalink') !== false) {
+				return $anchor->href;
+			}
+
+		}
+
+		return null;
+
+	}
+
+	private function extractGroupContent($post) {
+
+		$content = $post->find('div.userContent', 0)
+			or returnServerError('Unable to find user content!');
+
+		return $content->innertext . $content->next_sibling()->innertext;
+
+	}
+
+	private function extractGroupTimestamp($post) {
+
+		$element = $post->find('abbr[data-utime]', 0)
+			or returnServerError('Unable to find timestamp!');
+
+		return $element->getAttribute('data-utime');
+
+	}
+
+	private function extractGroupAuthor($post) {
+
+		$element = $post->find('img', 0)
+			or returnServerError('Unable to find author information!');
+
+		return $element->{'aria-label'};
+
+	}
+
+	private function extractGroupEnclosures($post) {
+
+		$elements = $post->find('div.userContent', 0)->next_sibling()->find('img');
+
+		$enclosures = array();
+
+		foreach($elements as $enclosure) {
+			$enclosures[] = $enclosure->src;
+		}
+
+		return empty($enclosures) ? null : $enclosures;
+
+	}
+
+	private function extractGroupTitle($post) {
+
+		$element = $post->find('h5', 0)
+			or returnServerError('Unable to find title!');
+
+		if(strpos($element->plaintext, 'shared') === false) {
+
+			$content = strip_tags($this->extractGroupContent($post));
+
+			return $this->extractGroupAuthor($post)
+			. ' posted: '
+			. substr(
+					$content,
+					0,
+					strpos(wordwrap($content, 64), "\n")
+				)
+			. '...';
+
+		}
+
+		return $element->plaintext;
+
+	}
+
+	#endregion
+
+	private function collectUserData(){
 
 		//Utility function for cleaning a Facebook link
 		$unescape_fb_link = function($matches){
-			if(is_array($matches) && count($matches) > 1){
+			if(is_array($matches) && count($matches) > 1) {
 				$link = $matches[1];
 				if(strpos($link, '/') === 0)
-					$link = self::URI . $link . '"';
+					$link = self::URI . $link;
 				if(strpos($link, 'facebook.com/l.php?u=') !== false)
 					$link = urldecode(extractFromDelimiters($link, 'facebook.com/l.php?u=', '&'));
 				return ' href="' . $link . '"';
@@ -78,28 +301,24 @@ class FacebookBridge extends BridgeAbstract {
 		$html = null;
 
 		//Handle captcha response sent by the viewer
-		if (isset($_POST['captcha_response']))
-		{
+		if (isset($_POST['captcha_response'])) {
 			if (session_status() == PHP_SESSION_NONE)
 				session_start();
-			if (isset($_SESSION['captcha_fields'], $_SESSION['captcha_action']))
-			{
+			if (isset($_SESSION['captcha_fields'], $_SESSION['captcha_action'])) {
 				$captcha_action = $_SESSION['captcha_action'];
 				$captcha_fields = $_SESSION['captcha_fields'];
-				$captcha_fields['captcha_response'] = preg_replace("/[^a-zA-Z0-9]+/", "", $_POST['captcha_response']);
-				$http_options = array(
-					'http' => array(
-						'method'  => 'POST',
-						'user_agent' => ini_get('user_agent'),
-						'header' => array("Content-type:
- application/x-www-form-urlencoded\r\nReferer: $captcha_action\r\nCookie: noscript=1\r\n"),
-						'content' => http_build_query($captcha_fields)
-					),
-				);
-				$context = stream_context_create($http_options);
-				$html = getContents($captcha_action, false, $context);
+				$captcha_fields['captcha_response'] = preg_replace('/[^a-zA-Z0-9]+/', '', $_POST['captcha_response']);
 
-				if($html === false){
+				$header = array("Content-type:
+application/x-www-form-urlencoded\r\nReferer: $captcha_action\r\nCookie: noscript=1\r\n");
+				$opts = array(
+					CURLOPT_POST => 1,
+					CURLOPT_POSTFIELDS => http_build_query($captcha_fields)
+				);
+
+				$html = getContents($captcha_action, $header, $opts);
+
+				if($html === false) {
 					returnServerError('Failed to submit captcha response back to Facebook');
 				}
 				unset($_SESSION['captcha_fields']);
@@ -110,32 +329,53 @@ class FacebookBridge extends BridgeAbstract {
 		}
 
 		//Retrieve page contents
-		if(is_null($html)){
-			$http_options = array(
-				'http' => array(
-					'method' => 'GET',
-					'user_agent' => ini_get('user_agent'),
-					'header' => 'Accept-Language: ' . getEnv('HTTP_ACCEPT_LANGUAGE') . "\r\n"
-				)
-			);
-			$context = stream_context_create($http_options);
-			if(!strpos($this->getInput('u'), "/")){
-				$html = getSimpleHTMLDOM(self::URI . urlencode($this->getInput('u')) . '?_fb_noscript=1',
-				false,
-				$context)
-					or returnServerError('No results for this query.');
+		if(is_null($html)) {
+			$header = array('Accept-Language: ' . getEnv('HTTP_ACCEPT_LANGUAGE') . "\r\n");
+
+			// Check if the user provided a fully qualified URL
+			if (filter_var($this->getInput('u'), FILTER_VALIDATE_URL)) {
+
+				$urlparts = parse_url($this->getInput('u'));
+
+				if($urlparts['host'] !== parse_url(self::URI)['host']) {
+					returnClientError('The host you provided is invalid! Received "'
+					. $urlparts['host']
+					. '", expected "'
+					. parse_url(self::URI)['host']
+					. '"!');
+				}
+
+				if(!array_key_exists('path', $urlparts)
+				|| $urlparts['path'] === '/') {
+					returnClientError('The URL you provided doesn\'t contain the user name!');
+				}
+
+				$user = explode('/', $urlparts['path'])[1];
+
+				$html = getSimpleHTMLDOM(self::URI . urlencode($user) . '?_fb_noscript=1', $header)
+						or returnServerError('No results for this query.');
+
 			} else {
-				$html = getSimpleHTMLDOM(self::URI . 'pages/' . $this->getInput('u') . '?_fb_noscript=1',
-				false,
-				$context)
-					or returnServerError('No results for this query.');
+
+				// First character cannot be a forward slash
+				if(strpos($this->getInput('u'), '/') === 0) {
+					returnClientError('Remove leading slash "/" from the username!');
+				}
+
+				if(!strpos($this->getInput('u'), '/')) {
+					$html = getSimpleHTMLDOM(self::URI . urlencode($this->getInput('u')) . '?_fb_noscript=1', $header)
+						or returnServerError('No results for this query.');
+				} else {
+					$html = getSimpleHTMLDOM(self::URI . 'pages/' . $this->getInput('u') . '?_fb_noscript=1', $header)
+						or returnServerError('No results for this query.');
+				}
+
 			}
 		}
 
 		//Handle captcha form?
 		$captcha = $html->find('div.captcha_interstitial', 0);
-		if (!is_null($captcha))
-		{
+		if (!is_null($captcha)) {
 			//Save form for submitting after getting captcha response
 			if (session_status() == PHP_SESSION_NONE)
 				session_start();
@@ -147,7 +387,7 @@ class FacebookBridge extends BridgeAbstract {
 
 			//Show captcha filling form to the viewer, proxying the captcha image
 			$img = base64_encode(getContents($captcha->find('img', 0)->src));
-			header('HTTP/1.1 500 ' . Http::getMessageForCode(500));
+			http_response_code(500);
 			header('Content-Type: text/html');
 			$message = <<<EOD
 <form method="post" action="?{$_SERVER['QUERY_STRING']}">
@@ -163,6 +403,12 @@ EOD;
 		}
 
 		//No captcha? We can carry on retrieving page contents :)
+		//First, we check wether the page is public or not
+		$loginForm = $html->find('._585r', 0);
+		if($loginForm != null) {
+			returnServerError('You must be logged in to view this page. This is not supported by RSS-Bridge.');
+		}
+
 		$element = $html
 		->find('#pagelet_timeline_main_column')[0]
 		->children(0)
@@ -171,28 +417,47 @@ EOD;
 		->next_sibling()
 		->children(0);
 
-		if(isset($element)){
+		if(isset($element)) {
+
+			defaultLinkTo($element, self::URI);
 
 			$author = str_replace(' | Facebook', '', $html->find('title#pageTitle', 0)->innertext);
 			$profilePic = 'https://graph.facebook.com/'
 			. $this->getInput('u')
-			. '/picture?width=200&amp;height=200';
+			. '/picture?width=200&amp;height=200#.image';
 
 			$this->authorName = $author;
 
-			foreach($element->children() as $cell){
+			foreach($element->children() as $cell) {
 				// Manage summary posts
-				if(strpos($cell->class, '_3xaf') !== false){
+				if(strpos($cell->class, '_3xaf') !== false) {
 					$posts = $cell->children();
 				} else {
 					$posts = array($cell);
 				}
 
-				foreach($posts as $post){
+				// Optionally skip reviews
+				if($this->getInput('skip_reviews')
+				&& !is_null($cell->find('#review_composer_container', 0))) {
+					continue;
+				}
+
+				foreach($posts as $post) {
+					// Check media type
+					switch($this->getInput('media_type')) {
+						case 'all': break;
+						case 'video':
+							if(empty($post->find('[aria-label=Video]'))) continue 2;
+							break;
+						case 'novideo':
+							if(!empty($post->find('[aria-label=Video]'))) continue 2;
+							break;
+						default: break;
+					}
 
 					$item = array();
 
-					if(count($post->find('abbr')) > 0){
+					if(count($post->find('abbr')) > 0) {
 
 						//Retrieve post contents
 						$content = preg_replace(
@@ -212,6 +477,12 @@ EOD;
 
 						$content = preg_replace(
 							'/(?i)><div class=\"_4l5([^>]+)>(.+?)<\/div>/i',
+							'',
+							$content);
+
+						//Remove "SpSonsSoriSsés"
+						$content = preg_replace(
+							'/(?iU)<a [^>]+ href="#" role="link" [^>}]+>.+<\/a>/iU',
 							'',
 							$content);
 
@@ -247,8 +518,8 @@ EOD;
 						);
 
 						//Retrieve date of the post
-						$date = $post->find("abbr")[0];
-						if(isset($date) && $date->hasAttribute('data-utime')){
+						$date = $post->find('abbr')[0];
+						if(isset($date) && $date->hasAttribute('data-utime')) {
 							$date = $date->getAttribute('data-utime');
 						} else {
 							$date = 0;
@@ -262,12 +533,21 @@ EOD;
 						if(strlen($title) > 64)
 							$title = substr($title, 0, strpos(wordwrap($title, 64), "\n")) . '...';
 
+						$uri = $post->find('abbr')[0]->parent()->getAttribute('href');
+
+						if (false !== strpos($uri, '?')) {
+							$uri = substr($uri, 0, strpos($uri, '?'));
+						}
+
 						//Build and add final item
-						$item['uri'] = self::URI . $post->find('abbr')[0]->parent()->getAttribute('href');
-						$item['content'] = $content;
+						$item['uri'] = htmlspecialchars_decode($uri);
+						$item['content'] = htmlspecialchars_decode($content);
 						$item['title'] = $title;
 						$item['author'] = $author;
 						$item['timestamp'] = $date;
+						if(strpos($item['content'], '<img') === false)
+							$item['enclosures'] = array($profilePic);
+
 						$this->items[] = $item;
 					}
 				}
@@ -276,9 +556,22 @@ EOD;
 	}
 
 	public function getName(){
-		if(!empty($this->authorName)){
-			return isset($this->extraInfos['name']) ? $this->extraInfos['name'] : $this->authorName
-			. ' - Facebook Bridge';
+
+		switch($this->queriedContext) {
+
+			case 'User':
+				if(!empty($this->authorName)) {
+					return isset($this->extraInfos['name']) ? $this->extraInfos['name'] : $this->authorName
+					. ' - Facebook Bridge';
+				}
+				break;
+
+			case 'Group':
+				if(!empty($this->groupName)) {
+					return $this->groupName . ' - Facebook Bridge';
+				}
+				break;
+
 		}
 
 		return parent::getName();

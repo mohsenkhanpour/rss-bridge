@@ -73,7 +73,7 @@ class ShanaprojectBridge extends BridgeAbstract {
 		// Getting the picture is a little bit tricky as it is part of the style.
 		// Luckily the style is part of the parent div :)
 
-		if(preg_match("/url\(\/\/([^\)]+)\)/i", $anime->parent->style, $matches))
+		if(preg_match('/url\(\/\/([^\)]+)\)/i', $anime->parent->style, $matches))
 			return $matches[1];
 
 		returnServerError('Could not extract background image!');
@@ -110,7 +110,7 @@ class ShanaprojectBridge extends BridgeAbstract {
 		if(!$animes)
 			returnServerError('Could not find anime headers!');
 
-		foreach($animes as $anime){
+		foreach($animes as $anime) {
 			$item = array();
 			$item['title'] = $this->extractAnimeTitle($anime);
 			$item['author'] = $this->extractAnimeAuthor($anime);

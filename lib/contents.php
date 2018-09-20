@@ -1,77 +1,66 @@
 <?php
-function getContents($url,
-$use_include_path = false,
-$context = null,
-$offset = 0,
-$maxlen = null){
-	$contextOptions = array(
-		'http' => array(
-			'user_agent' => ini_get('user_agent'),
-			'accept_encoding' => 'gzip'
-		)
-	);
+function getContents($url, $header = array(), $opts = array()){
+	$ch = curl_init($url);
+	curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+	curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
 
-	if(defined('PROXY_URL') && !defined('NOPROXY')){
-		$contextOptions['http']['proxy'] = PROXY_URL;
-		$contextOptions['http']['request_fulluri'] = true;
+	if(is_array($header) && count($header) !== 0)
+		curl_setopt($ch, CURLOPT_HTTPHEADER, $header);
 
-		if(is_null($context)){
-			$context = stream_context_create($contextOptions);
-		} else {
-			$prevContext = $context;
-			if(!stream_context_set_option($context, $contextOptions)){
-				$context = $prevContext;
-			}
+	curl_setopt($ch, CURLOPT_USERAGENT, ini_get('user_agent'));
+	curl_setopt($ch, CURLOPT_ENCODING, '');
+	curl_setopt($ch, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+
+	if(is_array($opts)) {
+		foreach($opts as $key => $value) {
+			curl_setopt($ch, $key, $value);
 		}
 	}
 
-	if(is_null($maxlen)){
-		$content = file_get_contents($url, $use_include_path, $context, $offset);
-	} else {
-		$content = file_get_contents($url, $use_include_path, $context, $offset, $maxlen);
+	if(defined('PROXY_URL') && !defined('NOPROXY')) {
+		curl_setopt($ch, CURLOPT_PROXY, PROXY_URL);
 	}
 
-	if($content === false)
-		debugMessage('Cant\'t download ' . $url);
+	// We always want the response header as part of the data!
+	curl_setopt($ch, CURLOPT_HEADER, true);
 
-	// handle compressed data
-	foreach($http_response_header as $header){
-		if(stristr($header, 'content-encoding')){
-			switch(true){
-			case stristr($header, 'gzip'):
-				$content = gzinflate(substr($content, 10, -8));
-				break;
-			case stristr($header, 'compress'):
-				//TODO
-			case stristr($header, 'deflate'):
-				//TODO
-			case stristr($header, 'brotli'):
-				//TODO
-				returnServerError($header . '=> Not implemented yet');
-				break;
-			case stristr($header, 'identity'):
-				break;
-			default:
-				returnServerError($header . '=> Unknown compression');
-			}
-		}
+	$data = curl_exec($ch);
+	$curlError = curl_error($ch);
+	$curlErrno = curl_errno($ch);
+
+	if($data === false)
+		debugMessage('Cant\'t download ' . $url . ' cUrl error: ' . $curlError . ' (' . $curlErrno . ')');
+
+	$headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+	$header = substr($data, 0, $headerSize);
+	$headers = parseResponseHeader($header);
+	$finalHeader = end($headers);
+
+	if(array_key_exists('http_code', $finalHeader)
+	&& strpos($finalHeader['http_code'], '200') === false
+	&& array_key_exists('Server', $finalHeader)
+	&& strpos($finalHeader['Server'], 'cloudflare') !== false) {
+		returnServerError(<<< EOD
+The server responded with a Cloudflare challenge, which is not supported by RSS-Bridge!<br>
+If this error persists longer than a week, please consider opening an issue on GitHub!
+EOD
+		);
 	}
 
-	return $content;
+	curl_close($ch);
+	return substr($data, $headerSize);
 }
 
 function getSimpleHTMLDOM($url,
-$use_include_path = false,
-$context = null,
-$offset = 0,
-$maxLen = null,
+$header = array(),
+$opts = array(),
 $lowercase = true,
 $forceTagsClosed = true,
 $target_charset = DEFAULT_TARGET_CHARSET,
 $stripRN = true,
 $defaultBRText = DEFAULT_BR_TEXT,
 $defaultSpanText = DEFAULT_SPAN_TEXT){
-	$content = getContents($url, $use_include_path, $context, $offset, $maxLen);
+	$content = getContents($url, $header, $opts);
 	return str_get_html($content,
 	$lowercase,
 	$forceTagsClosed,
@@ -89,10 +78,8 @@ $defaultSpanText = DEFAULT_SPAN_TEXT){
  */
 function getSimpleHTMLDOMCached($url,
 $duration = 86400,
-$use_include_path = false,
-$context = null,
-$offset = 0,
-$maxLen = null,
+$header = array(),
+$opts = array(),
 $lowercase = true,
 $forceTagsClosed = true,
 $target_charset = DEFAULT_TARGET_CHARSET,
@@ -113,11 +100,11 @@ $defaultSpanText = DEFAULT_SPAN_TEXT){
 	$time = $cache->getTime();
 	if($time !== false
 	&& (time() - $duration < $time)
-	&& (!defined('DEBUG') || DEBUG !== true)){ // Contents within duration
+	&& (!defined('DEBUG') || DEBUG !== true)) { // Contents within duration
 		$content = $cache->loadData();
 	} else { // Content not within duration
-		$content = getContents($url, $use_include_path, $context, $offset, $maxLen);
-		if($content !== false){
+		$content = getContents($url, $header, $opts);
+		if($content !== false) {
 			$cache->saveData($content);
 		}
 	}
@@ -129,4 +116,91 @@ $defaultSpanText = DEFAULT_SPAN_TEXT){
 	$stripRN,
 	$defaultBRText,
 	$defaultSpanText);
+}
+
+/**
+ * Parses the provided response header into an associative array
+ *
+ * Based on https://stackoverflow.com/a/18682872
+ */
+function parseResponseHeader($header) {
+
+	$headers = array();
+	$requests = explode("\r\n\r\n", trim($header));
+
+	foreach ($requests as $request) {
+
+		$header = array();
+
+		foreach (explode("\r\n", $request) as $i => $line) {
+
+			if($i === 0) {
+				$header['http_code'] = $line;
+			} else {
+
+				list ($key, $value) = explode(': ', $line);
+				$header[$key] = $value;
+
+			}
+
+		}
+
+		$headers[] = $header;
+
+	}
+
+	return $headers;
+
+}
+
+/**
+ * Determine MIME type from URL/Path file extension
+ * Remark: Built-in functions mime_content_type or fileinfo requires fetching remote content
+ * Remark: A bridge can hint for a MIME type by appending #.ext to a URL, e.g. #.image
+ * Based on https://stackoverflow.com/a/1147952
+ */
+function getMimeType($url) {
+	static $mime = null;
+
+	if (is_null($mime)) {
+		// Default values, overriden by /etc/mime.types when present
+		$mime = array(
+			'jpg' => 'image/jpeg',
+			'gif' => 'image/gif',
+			'png' => 'image/png',
+			'image' => 'image/*'
+		);
+		// '@' is used to mute open_basedir warning, see issue #818
+		if (@is_readable('/etc/mime.types')) {
+			$file = fopen('/etc/mime.types', 'r');
+			while(($line = fgets($file)) !== false) {
+				$line = trim(preg_replace('/#.*/', '', $line));
+				if(!$line)
+					continue;
+				$parts = preg_split('/\s+/', $line);
+				if(count($parts) == 1)
+					continue;
+				$type = array_shift($parts);
+				foreach($parts as $part)
+					$mime[$part] = $type;
+			}
+			fclose($file);
+		}
+	}
+
+	if (strpos($url, '?') !== false) {
+		$url_temp = substr($url, 0, strpos($url, '?'));
+		if (strpos($url, '#') !== false) {
+			$anchor = substr($url, strpos($url, '#'));
+			$url_temp .= $anchor;
+		}
+		$url = $url_temp;
+	}
+
+	$ext = strtolower(pathinfo($url, PATHINFO_EXTENSION));
+	if (!empty($mime[$ext])) {
+		return $mime[$ext];
+	}
+
+	return 'application/octet-stream';
 }
