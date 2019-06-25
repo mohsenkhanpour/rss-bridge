@@ -11,7 +11,6 @@ class NineGagBridge extends BridgeAbstract {
 			'd' => array(
 				'name' => 'Section',
 				'type' => 'list',
-				'required' => true,
 				'values' => array(
 					'Hot' => 'hot',
 					'Trending' => 'trending',
@@ -28,7 +27,6 @@ class NineGagBridge extends BridgeAbstract {
 			'g' => array(
 				'name' => 'Section',
 				'type' => 'list',
-				'required' => true,
 				'values' => array(
 					'Animals' => 'cute',
 					'Anime & Manga' => 'anime-manga',
@@ -88,7 +86,6 @@ class NineGagBridge extends BridgeAbstract {
 			't' => array(
 				'name' => 'Type',
 				'type' => 'list',
-				'required' => true,
 				'values' => array(
 					'Hot' => 'hot',
 					'Fresh' => 'fresh',
@@ -117,7 +114,7 @@ class NineGagBridge extends BridgeAbstract {
 		$cursor = 'c=10';
 		$posts = array();
 		for ($i = 0; $i < $this->getPages(); ++$i) {
-			$content = getContents($url.$cursor);
+			$content = getContents($url . $cursor);
 			$json = json_decode($content, true);
 			$posts = array_merge($posts, $json['data']['posts']);
 			$cursor = $json['data']['nextCursor'];
@@ -156,7 +153,7 @@ class NineGagBridge extends BridgeAbstract {
 			$uri = $this->getInput('t');
 		}
 
-		return self::URI.$uri;
+		return self::URI . $uri;
 	}
 
 	protected function getGroup() {
@@ -187,7 +184,7 @@ class NineGagBridge extends BridgeAbstract {
 		return $this->p;
 	}
 
-	protected function getParameterKey(String $input = '') {
+	protected function getParameterKey($input = '') {
 		$params = $this->getParameters();
 		$tab = 'Sections';
 		if ($input === 'd') {
@@ -203,7 +200,7 @@ class NineGagBridge extends BridgeAbstract {
 		);
 	}
 
-	protected static function getContent(array $post) {
+	protected static function getContent($post) {
 		if ($post['type'] === 'Animated') {
 			$content = self::getAnimated($post);
 		} elseif ($post['type'] === 'Article') {
@@ -215,7 +212,7 @@ class NineGagBridge extends BridgeAbstract {
 		return $content;
 	}
 
-	protected static function getPhoto(array $post) {
+	protected static function getPhoto($post) {
 		$image = $post['images']['image460'];
 		$photo = '<picture>';
 		$photo .= sprintf(
@@ -233,7 +230,7 @@ class NineGagBridge extends BridgeAbstract {
 		return $photo;
 	}
 
-	protected static function getAnimated(array $post) {
+	protected static function getAnimated($post) {
 		$poster = $post['images']['image460']['url'];
 		$sources = $post['images'];
 		$video = sprintf(
@@ -258,7 +255,7 @@ class NineGagBridge extends BridgeAbstract {
 		return $video;
 	}
 
-	protected static function getArticle(array $post) {
+	protected static function getArticle($post) {
 		$blocks = $post['article']['blocks'];
 		$medias = $post['article']['medias'];
 		$contents = array();
@@ -281,7 +278,7 @@ class NineGagBridge extends BridgeAbstract {
 		return $content;
 	}
 
-	protected static function getRichText(string $text = '') {
+	protected static function getRichText($text = '') {
 		$text = trim($text);
 
 		if (preg_match('/^>\s(?<text>.*)/', $text, $matches)) {
@@ -301,10 +298,18 @@ class NineGagBridge extends BridgeAbstract {
 		return $text;
 	}
 
-	protected static function getCategories(array $post) {
+	protected static function getCategories($post) {
 		$params = self::PARAMETERS;
 		$sections = $params['Sections']['g']['values'];
-		$postSections = $post['sections'];
+
+		if(isset($post['sections'])) {
+			$postSections = $post['sections'];
+		} elseif (isset($post['postSection'])) {
+			$postSections = array($post['postSection']);
+		} else {
+			$postSections = array();
+		}
+
 		foreach ($postSections as $key => $section) {
 			$postSections[$key] = array_search($section, $sections);
 		}
@@ -312,7 +317,7 @@ class NineGagBridge extends BridgeAbstract {
 		return $postSections;
 	}
 
-	protected static function getTimestamp(array $post) {
+	protected static function getTimestamp($post) {
 		$url = $post['images']['image460']['url'];
 		$headers = get_headers($url, true);
 		$date = $headers['Date'];
